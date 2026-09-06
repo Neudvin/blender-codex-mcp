@@ -71,19 +71,22 @@ def test_bridge_real_socket_auth_and_fragmentation(tmp_path, monkeypatch):
     bridge = Bridge(Runtime(), port=0)
     port = bridge.socket.getsockname()[1]
     try:
-        for token, expected in [("wrong", False), (wire.read_token(), True)]:
+        cases = [(1, wire.read_token(), "PROTOCOL_MISMATCH"),
+                 (wire.PROTOCOL, "wrong", "UNAUTHORIZED"),
+                 (wire.PROTOCOL, wire.read_token(), None)]
+        for protocol, token, error_code in cases:
             with socket.create_connection(("127.0.0.1", port)) as sock:
                 sock.settimeout(1)
-                request = wire.pack({"protocol": 1, "id": "req", "token": token,
+                request = wire.pack({"protocol": protocol, "id": "req", "token": token,
                                      "op": "status", "args": {"n": 3}})
                 for fragment in [request[:2], request[2:7], request[7:]]:
                     sock.sendall(fragment)
                     bridge.tick()
                 bridge.tick()
                 result = wire.unpack(bytearray(sock.recv(65536)))
-                assert result["result"]["ok"] is expected
-                if not expected:
-                    assert result["result"]["error"]["code"] == "UNAUTHORIZED"
+                assert result["result"]["ok"] is (error_code is None)
+                if error_code:
+                    assert result["result"]["error"]["code"] == error_code
         assert calls == [("status", {"n": 3}, threading.get_ident())]
     finally:
         bridge.close()
@@ -98,7 +101,7 @@ def test_mcp_schema_and_text_patch(monkeypatch):
     monkeypatch.setattr(server.client, "call", call)
     async def check():
         tools = await server.mcp.list_tools()
-        assert len(tools) == 9
+        assert len(tools) == 10
         assert all("execute" not in t.name for t in tools)
         text_tool = next(t for t in tools if t.name == "card_text_set")
         assert "TextPatch" in text_tool.inputSchema["$defs"]
@@ -109,6 +112,24 @@ def test_mcp_schema_and_text_patch(monkeypatch):
         assert not result.isError
         assert calls[-1][1]["text"] == {"id": "name", "text": "NEW NAME"}
     asyncio.run(check())
+
+
+def test_connect_failure_is_not_an_uncertain_mutation(monkeypatch):
+    monkeypatch.setattr(wire, "read_token", lambda: "a" * 64)
+    def refuse(*args, **kwargs):
+        raise ConnectionRefusedError("test refusal")
+    monkeypatch.setattr(wire.socket, "create_connection", refuse)
+    with pytest.raises(DomainError) as error:
+        wire.Client().call("create", {})
+    assert error.value.code == "NOT_CONNECTED"
+
+
+def test_save_and_export_have_distinct_schemas():
+    from blender_codex_mcp.agentic_server import mcp
+    tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
+    assert tools["card_save"].inputSchema["required"] == ["expected_filepath"]
+    assert set(tools["card_export"].inputSchema["required"]) == {"asset_ref", "filename"}
+    assert "allow_additional" in tools["card_create"].inputSchema["properties"]
 
 
 def test_mcp_errors_are_structured(monkeypatch):

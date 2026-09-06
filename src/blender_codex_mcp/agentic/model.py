@@ -46,6 +46,7 @@ class TextSpec:
     y_mm: float = 0
     size_mm: float = 2.4
     tracking: float = 1.1
+    rotation_deg: float = 0
 
 
 def default_texts():
@@ -104,6 +105,7 @@ class TextPatch:
     y_mm: Optional[float] = None
     size_mm: Optional[float] = None
     tracking: Optional[float] = None
+    rotation_deg: Optional[float] = None
 
 
 def validate_text(raw):
@@ -118,7 +120,7 @@ def validate_text(raw):
         raise DomainError("INVALID_ARGUMENT", "Text must be one line of 1–256 printable characters.")
     if t["side"] not in ("front", "back"):
         raise DomainError("INVALID_ARGUMENT", "Text side must be front or back.")
-    for key, bounds in {"x_mm": (-250, 250), "y_mm": (-250, 250), "size_mm": (0.5, 15), "tracking": (0.5, 3)}.items():
+    for key, bounds in {"x_mm": (-250, 250), "y_mm": (-250, 250), "size_mm": (0.5, 15), "tracking": (0.5, 3), "rotation_deg": (-360, 360)}.items():
         t[key] = number(t[key], key, *bounds)
     return t
 

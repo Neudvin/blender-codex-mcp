@@ -43,7 +43,7 @@ def test_packaged_addon_through_stdio(tmp_path):
                 async with stdio_client(params) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
-                        assert len((await session.list_tools()).tools) == 9
+                        assert len((await session.list_tools()).tools) == 10
                         async def call(name, args):
                             result = await session.call_tool(name, args)
                             assert not result.isError, result
@@ -57,8 +57,17 @@ def test_packaged_addon_through_stdio(tmp_path):
                         preview = await session.call_tool("card_preview", {"asset_ref": ref, "resolution": 128})
                         assert not preview.isError
                         assert any(c.type == "image" and c.mimeType == "image/png" for c in preview.content)
-                        saved = await call("card_save", {"asset_ref": ref, "filename": "stdio-card.blend"})
+                        status = await call("card_status", {})
+                        saved = await call("card_save", {"expected_filepath": status["project"]["filepath"], "filename": "stdio-project.blend"})
                         assert Path(saved["path"]).is_file()
+                        status = await call("card_status", {})
+                        assert status["project"]["filepath"] == saved["path"]
+                        assert not status["project"]["disk_changed"]
+                        await call("card_update", {"asset_ref": ref, "expected_revision": 2,
+                            "request_id": "stdio-veneer", "changes": {"veneer_mm": 0.5, "core_mm": 0.7}})
+                        again = await call("card_save", {"expected_filepath": saved["path"]})
+                        assert again["path"] == saved["path"] and not again["first_save"]
+                        assert len((await call("card_status", {}))["assets"]) == 1
                         error = await session.call_tool("card_update", {"asset_ref": ref,
                             "expected_revision": 1, "request_id": "stdio-stale", "changes": {"width_mm": 90}})
                         assert error.isError and error.structuredContent["error"]["code"] == "STALE_REVISION"

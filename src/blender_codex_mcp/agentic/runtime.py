@@ -102,6 +102,10 @@ def make_text(collection, text, spec, gold):
                     sign * (spec["core_mm"] / 2 + spec["veneer_mm"] + 0.006) / 1000)
     if back:
         obj.rotation_euler[1] = math.pi
+    # Rotate in the face's own XY plane; back remains readable from behind.
+    from mathutils import Matrix
+    obj.rotation_euler = (obj.rotation_euler.to_matrix() @
+                          Matrix.Rotation(math.radians(text.get("rotation_deg", 0)), 3, "Z")).to_euler()
     return obj
 
 
@@ -214,6 +218,28 @@ class Runtime:
     def __init__(self, output_root=None):
         self.output_root = Path(output_root or Path.home() / "BlenderAgenticMCP").expanduser().resolve()
         self.epoch = uuid.uuid4().hex
+        self.project_saved()
+
+    @staticmethod
+    def disk_signature(filepath):
+        if not filepath:
+            return None
+        try:
+            stat = Path(filepath).stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+
+    def project_saved(self):
+        """Record writes made by this Blender process, including normal GUI saves."""
+        self._project_path = bpy.data.filepath
+        self._project_disk = self.disk_signature(self._project_path)
+
+    def project_status(self):
+        path = bpy.data.filepath
+        return {"filepath": path, "scene": bpy.context.scene.name,
+                "unsaved_changes": bpy.data.is_dirty,
+                "disk_changed": path != self._project_path or self.disk_signature(path) != self._project_disk}
 
     def assets(self):
         return [c for c in bpy.context.scene.collection.children if STATE in c]
@@ -257,7 +283,8 @@ class Runtime:
         try:
             handlers = {"status": self.status, "inspect": self.inspect, "create": self.create,
                         "update": self.update, "text_set": self.text_set, "history": self.history,
-                        "restore": self.restore, "preview": self.preview, "save": self.save}
+                        "restore": self.restore, "preview": self.preview, "save": self.save,
+                        "export": self.export}
             if op not in handlers:
                 raise DomainError("UNSUPPORTED_OPERATION", "Discover the supported operations with status.")
             return handlers[op](**args)
@@ -271,9 +298,11 @@ class Runtime:
     def status(self):
         return {"ok": True, "version": VERSION, "blender": bpy.app.version_string, "epoch": self.epoch,
                 "execution_mode": "headless" if bpy.app.background else "live_gui",
-                "operations": ["inspect", "create", "update", "text_set", "history", "restore", "preview", "save"],
+                "operations": ["inspect", "create", "update", "text_set", "history", "restore", "preview", "save", "export"],
+                "project": self.project_status(),
+                "tested_blender": "4.5.3 LTS; other versions require verification",
                 "output_root": str(self.output_root),
-                "assets": [{"asset_ref": json.loads(c[STATE])["ref"], "name": c.name} for c in self.assets()]}
+                "assets": [{"asset_ref": json.loads(c[STATE])["ref"], "revision": json.loads(c[STATE])["revision"], "name": c.name} for c in self.assets()]}
 
     def inspect(self, asset_ref=None, offset=0, limit=20):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
@@ -301,10 +330,18 @@ class Runtime:
                     return h, {**record["result"], "replayed": True, "current_revision": state["revision"]}
         return h, None
 
-    def create(self, spec, request_id):
-        h, replay = self.request_check(request_id, {"op": "create", "spec": spec})
+    def create(self, spec, request_id, allow_additional=False):
+        payload = {"op": "create", "spec": spec}
+        if allow_additional:
+            payload["allow_additional"] = True
+        h, replay = self.request_check(request_id, payload)
         if replay:
             return replay
+        if type(allow_additional) is not bool:
+            raise DomainError("INVALID_ARGUMENT", "allow_additional must be a boolean.")
+        if self.assets() and not allow_additional:
+            raise DomainError("CARD_ALREADY_EXISTS", "Edit an existing asset with card_update/card_text_set. Set allow_additional only when the user asks for another card.",
+                              asset_refs=[json.loads(c[STATE])["ref"] for c in self.assets()])
         if bpy.context.mode != "OBJECT":
             raise DomainError("INVALID_MODE", "Switch Blender to Object Mode before constructing a card.")
         normalized = validate_spec(spec)
@@ -411,7 +448,40 @@ class Runtime:
         render_preview(coll, state["spec"], view, resolution, path)
         return {"ok": True, "path": str(path), "view": view, "revision": state["revision"], "resolution": resolution}
 
-    def save(self, asset_ref, filename):
+    def save(self, expected_filepath, filename=None):
+        """Save the current complete project in this Blender process, like Ctrl+S."""
+        if not isinstance(expected_filepath, str) or expected_filepath != bpy.data.filepath:
+            raise DomainError("PROJECT_MISMATCH", "Read card_status and supply the exact current project.filepath.",
+                              filepath=bpy.data.filepath)
+        if self.project_status()["disk_changed"]:
+            raise DomainError("PROJECT_DISK_CONFLICT", "The project changed on disk or was switched outside this bridge. Reconcile it in Blender before saving; do not overwrite from a stale live scene.")
+        first_save = not bpy.data.filepath
+        if first_save:
+            if filename is None:
+                raise DomainError("FILENAME_REQUIRED", "The current project is unsaved. Supply a simple .blend filename for its first save.")
+            path = self.artifact_path(filename, ".blend")
+        else:
+            if filename is not None:
+                raise DomainError("SAVE_AS_NOT_SUPPORTED", "Omit filename to save the current project. Use card_export only for an explicitly requested separate card copy.")
+            path = Path(bpy.data.filepath)
+        # Blender's native save preserves the whole project, workspace and manual edits.
+        # Keep at least one normal .blend1 backup of the previous on-disk project.
+        prefs = bpy.context.preferences.filepaths
+        previous_backups = prefs.save_version
+        prefs.save_version = max(1, previous_backups)
+        try:
+            result = bpy.ops.wm.save_as_mainfile(filepath=str(path), check_existing=False)
+            if "FINISHED" not in result:
+                raise DomainError("SAVE_FAILED", "Blender did not complete the project save.")
+        finally:
+            prefs.save_version = previous_backups
+        self.project_saved()
+        return {"ok": True, "path": bpy.data.filepath, "first_save": first_save,
+                "scope": "complete current project; same file on subsequent saves",
+                "project": self.project_status()}
+
+    def export(self, asset_ref, filename):
+        """Explicit card-only copy; never changes the live project's save target."""
         coll, state = self.resolve(asset_ref)
         if fingerprint(coll) != state["fingerprint"]:
             raise DomainError("MANUAL_EDIT_CONFLICT", "Save manual edits through Blender before exporting a recipe artifact.")

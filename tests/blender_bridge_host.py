@@ -25,4 +25,5 @@ finally:
     addon_utils.disable("blender_agentic_mcp", default_set=True)
 assert not bpy.app.timers.is_registered(addon.tick)
 assert addon.on_load not in bpy.app.handlers.load_pre
+assert addon.on_save not in bpy.app.handlers.save_post
 print("PACKAGED_ADDON_PASS")

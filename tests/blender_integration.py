@@ -49,6 +49,8 @@ assert created["revision"] == 1
 assert call("create", spec={}, request_id="create-1")["replayed"]
 fail("create", "IDEMPOTENCY_CONFLICT", spec={"width_mm": 90}, request_id="create-1")
 assert len(runtime.assets()) == 1
+fail("create", "CARD_ALREADY_EXISTS", spec={}, request_id="accidental-duplicate")
+assert len(runtime.assets()) == 1
 
 original = call("inspect", asset_ref=ref)["spec"]
 call("text_set", asset_ref=ref, expected_revision=1, request_id="email-1",
@@ -97,17 +99,49 @@ if os.environ.get("AGENTIC_TEST_RENDER") == "1":
         assert Path(rendered["path"]).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
         assert bpy.context.scene == active and counts() == stable_counts
 
-saved = call("save", asset_ref=ref, filename="card.blend")
-fail("save", "FILE_EXISTS", asset_ref=ref, filename="card.blend")
-fail("save", "INVALID_ARGUMENT", asset_ref=ref, filename="../escape.blend")
+# The first save establishes one complete project file; later saves update it.
+fail("save", "FILENAME_REQUIRED", expected_filepath="")
+project = call("save", expected_filepath="", filename="working-project.blend")
+project_path = project["path"]
+assert bpy.data.filepath == project_path and project["first_save"]
+fail("save", "PROJECT_MISMATCH", expected_filepath="")
+fail("save", "SAVE_AS_NOT_SUPPORTED", expected_filepath=project_path, filename="another.blend")
+call("text_set", asset_ref=ref, expected_revision=4, request_id="rotation-1",
+     text={"id": "name", "rotation_deg": 90})
+assert len(runtime.assets()) == 1
+coll, state = runtime.resolve(ref)
+import math
+name = next(o for o in coll.objects if o.get(ROLE) == "text:name")
+assert abs(math.degrees(name.rotation_euler.z) - 90) < 0.001
+same = call("save", expected_filepath=project_path)
+assert same["path"] == project_path and not same["first_save"]
+assert Path(project_path + "1").is_file()  # Native Blender previous-save backup.
+
+# Simulate a separate process touching the saved file. Never overwrite blindly.
+stat = Path(project_path).stat()
+os.utime(project_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1000000000))
+fail("save", "PROJECT_DISK_CONFLICT", expected_filepath=project_path)
+os.utime(project_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+runtime.project_saved()  # Reconciled by the test; production uses Blender save/load events.
+
+saved = call("export", asset_ref=ref, filename="card.blend")
+fail("export", "FILE_EXISTS", asset_ref=ref, filename="card.blend")
+fail("export", "INVALID_ARGUMENT", asset_ref=ref, filename="../escape.blend")
+assert bpy.data.filepath == project_path
 assert bpy.data.objects.get("User sentinel") == sentinel
+
+bpy.ops.wm.open_mainfile(filepath=project_path)
+runtime = Runtime(output)
+assert bpy.data.objects.get("User sentinel") is not None
+assert call("inspect", asset_ref=ref)["revision"] == 5
+assert next(t for t in call("inspect", asset_ref=ref)["spec"]["texts"] if t["id"] == "name")["rotation_deg"] == 90
 
 # Reopen the actual file, then edit again using persisted state/replay ledger.
 bpy.ops.wm.open_mainfile(filepath=saved["path"])
 runtime = Runtime(output)
-assert call("inspect", asset_ref=ref)["revision"] == 4
+assert call("inspect", asset_ref=ref)["revision"] == 5
 assert len(bpy.context.scene.objects) == created["objects"]
 assert call("create", spec={}, request_id="create-1")["replayed"]
-call("update", asset_ref=ref, expected_revision=4, request_id="reopen-1", changes={"gold_roughness": 0.3})
-assert call("inspect", asset_ref=ref)["revision"] == 5
+call("update", asset_ref=ref, expected_revision=5, request_id="reopen-1", changes={"gold_roughness": 0.3})
+assert call("inspect", asset_ref=ref)["revision"] == 6
 print("AGENTIC_INTEGRATION_PASS", bpy.app.version_string, str(output))
