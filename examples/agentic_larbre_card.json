@@ -1,0 +1,57 @@
+{
+  "width_mm": 85,
+  "height_mm": 55,
+  "core_mm": 0.8,
+  "veneer_mm": 0.3,
+  "border_mm": 0.8,
+  "corner_cut_mm": 12,
+  "texts": [
+    {
+      "id": "name",
+      "text": "YOUR NAME",
+      "side": "front",
+      "size_mm": 3.4,
+      "tracking": 1.25
+    },
+    {
+      "id": "address",
+      "text": "YOUR ADDRESS",
+      "side": "back",
+      "y_mm": 12,
+      "size_mm": 2.7,
+      "tracking": 1.2
+    },
+    {
+      "id": "city",
+      "text": "CITY, REGION",
+      "side": "back",
+      "y_mm": 7,
+      "size_mm": 2.7,
+      "tracking": 1.2
+    },
+    {
+      "id": "country",
+      "text": "YOUR COUNTRY",
+      "side": "back",
+      "y_mm": 2,
+      "size_mm": 2.7,
+      "tracking": 1.2
+    },
+    {
+      "id": "phone",
+      "text": "+1 000 000 0000",
+      "side": "back",
+      "y_mm": -8,
+      "size_mm": 2.7,
+      "tracking": 1.2
+    },
+    {
+      "id": "email",
+      "text": "NAME@EXAMPLE.COM",
+      "side": "back",
+      "y_mm": -13,
+      "size_mm": 2.7,
+      "tracking": 1.2
+    }
+  ]
+}

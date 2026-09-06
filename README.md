@@ -2,6 +2,13 @@
 
 Blender Codex MCP connects Codex to Blender through the Model Context Protocol.
 
+**Experimental typed business-card profile:** see [Agentic Card setup and
+benchmark](docs/AGENTIC_CARD.md) for the separate `blender-agentic-mcp` server and
+installable add-on. It supports conversational geometry/material/text edits,
+validated recipe revisions, previews and editable `.blend` export. Tested with
+Blender 4.5.3 LTS on Linux; Windows/GPT-5 token measurements remain pending.
+The instructions below describe the original general-purpose profile.
+
 - Blender runs a local socket addon on `localhost:9876` by default.
 - Codex runs an MCP server from this repository.
 - The MCP server forwards tool calls into Blender.

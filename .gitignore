@@ -14,3 +14,7 @@ wheels/
 
 # Local config secrets
 src/blender_mcp/config.py
+
+# Prototype test artifacts
+.pytest_cache/
+test-output/
