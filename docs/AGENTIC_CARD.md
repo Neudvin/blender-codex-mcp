@@ -1,7 +1,7 @@
 # Agentic Card prototype
 
 This experimental profile lets Codex create and edit the L’Arbre-style layered
-business-card concept through nine typed MCP tools. Blender constructs the
+business-card concept through eleven typed MCP tools. Blender constructs the
 geometry, checks text layout, and manages recipe revisions. The model sends small
 parameter changes instead of generating a Blender Python program for each edit.
 
@@ -49,8 +49,8 @@ The add-on stops when a `.blend` file is loaded; click **Start MCP** again after
 opening a file. This also gives the bridge a new session epoch.
 
 Generated files default to `C:\Users\neudv\BlenderAgenticMCP`; the folder can be
-changed in add-on preferences. The server never overwrites an existing artifact.
-Use a new filename when saving a later revision. Preview images accumulate in
+changed in add-on preferences. Card exports and previews never overwrite an existing artifact.
+Normal project saves update the current `.blend` and keep a native Blender backup. Preview images accumulate in
 this folder and can be deleted when no longer needed.
 
 If the separate checkout already exists, inspect its local changes before
@@ -71,7 +71,8 @@ The bridge does not choose the model or require an OpenAI API key.
 > Make the exposed diagonal corner 10 mm. Then restore only that corner to its
 > original size, preserving my email edit.
 
-> Save the editable card as larbre_prototype_01.blend.
+> Save this current project as working_card.blend. For later edits, keep saving
+> that same project; do not create another card or export a separate copy.
 
 Text uses Blender's built-in font unless you provide a local `.ttf` or `.otf`
 path. For a closer serif appearance, tell Codex to set `font_path` to an existing
@@ -92,19 +93,79 @@ font; they are actual model renders.
 ![Generated front](agentic_card/front.png)
 ![Generated back](agentic_card/back.png)
 
+## Updating from v0.1: one project throughout the conversation
+
+v0.1 called its card-only export `card_save`. That name encouraged repeated new
+files. In **v0.2**, `card_save` performs a normal whole-project Blender save;
+`card_export` is the separate-copy operation. Both the server and installed
+add-on must be updated together; wire protocol 2 prevents an old client from
+silently using the new save semantics.
+
+In the separate checkout, inspect `git status` for local modifications, then
+update the `codex/typed-card-prototype` branch without discarding your work.
+For a clean checkout:
+
+```powershell
+Set-Location C:\Users\neudv\blender-agentic-mcp
+git pull --ff-only
+uv run python scripts/build_agentic_addon.py
+```
+
+Stop the bridge and reinstall/enable the rebuilt ZIP in Blender, then restart
+Blender and Codex. The connection should report version `0.3.0`. Tests use
+Blender 3.6.23 and 4.5.3 LTS; Blender 3.6.2 is expected to work for this narrow workflow.
+
+The intended sequence is:
+
+1. `card_status` identifies `project.filepath`, the active scene, and card refs.
+2. `card_update` changes that card's veneer/core values; it retains the asset ref.
+3. `card_text_set` changes `rotation_deg` on the same text id (degrees in its face's
+   plane), preserving its other properties. Rotated text must still fit.
+4. If the starting file already contains an unmanaged card, call `card_inspect`
+   with no ref, then `card_adopt` with the exact four mesh names and optional
+   FONT names. Adoption preserves native meshes/materials and assigns a stable
+   asset reference; later text, veneer, core, recess and save edits stay in the
+   same project.
+5. `card_save(expected_filepath=...)` saves all project contents in the **same**
+   running Blender instance. Copy the exact filepath from status. Only an unsaved
+   project (`filepath == ""`) accepts a new simple filename under the output folder.
+
+Saves retain at least one native `.blend1` backup of the previous on-disk project.
+These backup files are expected; they are not separate working designs.
+`PROJECT_MISMATCH` refuses a wrong live project, and `PROJECT_DISK_CONFLICT`
+refuses a disk file changed since this bridge began observing it or this Blender
+instance last saved it. Disk detection uses file metadata, not a durable merge
+journal. Loading a file stops the bridge; restart it after reconciling changes.
+
+Do not treat an MCP connection failure as evidence that Blender is busy.
+`NOT_CONNECTED` means no request could be sent; check the intended Blender window
+and Start MCP. `OUTCOME_UNKNOWN` means a request may have been sent, so inspect
+before retrying a mutation. Neither response authorizes switching to a background
+Blender process and editing a different copy.
+
+Existing v0.1 files are preserved. The duplicate guard does not delete earlier
+cards. Old generated recipes support the new rotation field with a default of
+zero. Recessed recipes are supported directly with `construction="recessed"`,
+`veneer_mm`, and `recess_mm`. Existing native recessed models are adopted
+explicitly by `card_adopt`; the model should discover names with `card_inspect`
+instead of rebuilding a second card. Native profile topology and materials are
+preserved during typed dimension/text edits.
+
 ## Tool contract
 
 | Tool | Purpose |
 | --- | --- |
 | `card_status` | Connection, Blender version, session epoch, cards and output folder |
 | `card_inspect` | Recipe and semantic components, or paginated scene objects |
-| `card_create` | Construct and validate a new layered card |
+| `card_create` | Construct a new card; refuse accidental duplicates when a card already exists |
+| `card_adopt` | Adopt existing native body/veneer/web meshes and optional text objects |
 | `card_update` | Change named dimensions, materials, grain or font |
-| `card_text_set` | Edit one text field, preserving omitted properties; add a new id |
+| `card_text_set` | Edit text, size, position or `rotation_deg`, preserving omitted properties |
 | `card_history` | List the last 32 recipe revisions |
 | `card_restore` | Restore a recipe or selected top-level parameters as a new revision |
 | `card_preview` | Render front, back, edge or perspective; return image and path |
-| `card_save` | Write an editable, card-only `.blend` without changing the active project |
+| `card_save` | Save the complete current project at its existing path; filename required only for its first save |
+| `card_export` | Explicitly export a separate card-only copy; live project/save target unchanged |
 
 Dimensions are **millimetres**; raw scene inspection reports locations in metres.
 Default assumptions are 85 × 55 mm, 0.8 mm core, 0.3 mm veneer per face,
@@ -142,7 +203,7 @@ file operation, not part of recipe undo.
   duplicate them before incorporating them into a manually edited composition.
   Fingerprints cover common supported properties, not every possible Blender
   edit. Preserve manually customized work through Blender's normal save workflow.
-- The saved artifact contains the card scene and native text/mesh/material data,
+- A `card_export` artifact contains the card scene and native text/mesh/material data,
   not your surrounding project or a custom workspace. Blender may report that
   it is opening a library file and construct a default workspace; the integration
   test verifies that the card scene and revision data can still be opened/edited.
@@ -162,7 +223,7 @@ file operation, not part of recipe undo.
 
 ## Verification and benchmark
 
-**20 Python/MCP tests passed**, plus the Blender render/save/reopen integration
+**22 Python/MCP tests passed**, plus the Blender render/save/reopen integration
 script and a serif-font reference render. Checks ran on Linux with official
 **Blender 4.5.3 LTS** and Python
 3.12 / MCP 1.29.1. Windows GUI behavior and Blender 5.2 remain unverified.
@@ -176,11 +237,13 @@ AGENTIC_TEST_RENDER=1 /path/to/blender --background --factory-startup --python-e
 The first command covers contracts, watertight prism topology, malformed and
 fragmented frames, authenticated sockets, structured MCP errors and reproducible
 ZIP packaging. The second launches the **packaged** add-on and a real MCP STDIO
-client/server: initialize → discover → create → text edit → save → stale-edit
+client/server: initialize → discover → create → text edit → save → veneer edit → save same file → stale-edit
 rejection, including an image response and clean add-on shutdown. The third exercises Blender text
 layout, failed-edit preservation, pagination beyond ten objects, idempotent
 replay, selective restore, manual/external dependency refusal, four previews,
-preservation of unrelated objects, and save/reopen/edit with persisted history.
+preservation of unrelated objects, duplicate-create refusal, typed rotation,
+whole-project save/reopen, external disk-change refusal, and separate export/reopen
+with persisted history.
 
 For a developer example render, run Blender with
 `--background --factory-startup --python-exit-code 1 --python scripts/render_agentic_example.py`.

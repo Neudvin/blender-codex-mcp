@@ -11,7 +11,7 @@ import uuid
 from .model import DomainError, canonical
 
 MAX_FRAME = 1024 * 1024
-PROTOCOL = 1
+PROTOCOL = 2  # v0.2 separates current-project save from card-only export.
 
 
 def token_path():
@@ -75,7 +75,12 @@ class Client:
         # One bounded request per connection. No automatic replay after a timeout.
         with self.lock:
             try:
-                with socket.create_connection(("127.0.0.1", self.port), timeout=self.timeout) as sock:
+                sock = socket.create_connection(("127.0.0.1", self.port), timeout=min(5, self.timeout))
+            except OSError as exc:
+                raise DomainError("NOT_CONNECTED", "Could not connect to Blender. Click Start MCP in the intended Blender window. No request was sent.") from exc
+            try:
+                with sock:
+                    sock.settimeout(self.timeout)
                     sock.sendall(pack(request))
                     buffer = bytearray()
                     while True:

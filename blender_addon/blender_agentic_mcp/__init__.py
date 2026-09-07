@@ -1,7 +1,7 @@
 """Install the ZIP built by scripts/build_agentic_addon.py, not this folder alone."""
 bl_info = {
     "name": "Blender Agentic Card MCP", "author": "Blender Codex MCP contributors",
-    "version": (0, 1, 0), "blender": (4, 5, 0), "category": "Interface",
+    "version": (0, 3, 0), "blender": (3, 6, 0), "category": "Interface",
     "location": "View3D > Sidebar > Agentic Card",
     "description": "Typed conversational business-card prototype over authenticated loopback",
 }
@@ -37,6 +37,12 @@ def stop():
 @persistent
 def on_load(_):
     stop()
+
+
+@persistent
+def on_save(_):
+    if _bridge is not None:
+        _bridge.runtime.project_saved()
 
 
 class AGENTICCARD_Preferences(bpy.types.AddonPreferences):
@@ -98,11 +104,14 @@ def register():
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.app.handlers.load_pre.append(on_load)
+    bpy.app.handlers.save_post.append(on_save)
 
 
 def unregister():
     stop()
     if on_load in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(on_load)
+    if on_save in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.remove(on_save)
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

@@ -10,7 +10,8 @@ import bpy
 from mathutils import Vector
 
 from . import VERSION
-from .model import DomainError, canonical, digest, identifier, inside_convex, outline, prism, validate_spec, validate_text
+from .model import (DomainError, canonical, card_face, digest, frame_mesh, identifier,
+                     inside_convex, outline, prism, validate_spec, validate_text)
 
 STATE = "agentic_card_state"
 ROLE = "agentic_role"
@@ -34,8 +35,8 @@ def cleanup(collection):
             bpy.data.materials.remove(mat)
 
 
-def new_mesh(collection, role, points, low, high, material, bevel):
-    vertices, faces = prism(points, low, high)
+def new_mesh(collection, role, points, low, high, material, bevel, frame=False):
+    vertices, faces = frame_mesh(*points, low, high) if frame else prism(points, low, high)
     mesh = bpy.data.meshes.new(role)
     mesh.from_pydata(vertices, [], faces)
     mesh.update()
@@ -98,10 +99,17 @@ def make_text(collection, text, spec, gold):
         curve.font = bpy.data.fonts.load(str(p), check_existing=True)
     back = text["side"] == "back"
     sign = -1 if back else 1
+    surface = spec["core_mm"] / 2 + spec["veneer_mm"]
+    if spec.get("construction") == "recessed":
+        surface -= spec.get("recess_mm", 0)
     obj.location = (sign * text["x_mm"] / 1000, text["y_mm"] / 1000,
-                    sign * (spec["core_mm"] / 2 + spec["veneer_mm"] + 0.006) / 1000)
+                    sign * (surface + 0.006) / 1000)
     if back:
         obj.rotation_euler[1] = math.pi
+    # Rotate in the face's own XY plane; back remains readable from behind.
+    from mathutils import Matrix
+    obj.rotation_euler = (obj.rotation_euler.to_matrix() @
+                          Matrix.Rotation(math.radians(text.get("rotation_deg", 0)), 3, "Z")).to_euler()
     return obj
 
 
@@ -137,12 +145,20 @@ def stage(spec):
     scene.collection.children.link(coll)
     try:
         gold = material("Card gold", spec["gold_color"], spec["gold_roughness"])
-        new_mesh(coll, "core", outline(spec["width_mm"], spec["height_mm"]),
-                 -spec["core_mm"] / 2, spec["core_mm"] / 2, gold, spec["bevel_mm"])
+        outer = card_face({**spec, "veneer_mm": 0})
+        face = card_face(spec)
+        if spec.get("construction") == "recessed":
+            new_mesh(coll, "core", (outer, face), -spec["core_mm"] / 2,
+                     spec["core_mm"] / 2, gold, spec["bevel_mm"], frame=True)
+            web = spec["core_mm"] - 2 * spec["recess_mm"]
+            new_mesh(coll, "web", face, -web / 2, web / 2, gold, spec["bevel_mm"])
+        else:
+            new_mesh(coll, "core", outer, -spec["core_mm"] / 2,
+                     spec["core_mm"] / 2, gold, spec["bevel_mm"])
         wood = material("Card veneer", spec["wood_color"], spec["wood_roughness"], True, spec["grain_angle_deg"])
-        face = outline(spec["width_mm"] - 2 * spec["border_mm"],
-                       spec["height_mm"] - 2 * spec["border_mm"], spec["corner_cut_mm"])
         z = spec["core_mm"] / 2
+        if spec.get("construction") == "recessed":
+            z -= spec["recess_mm"]
         new_mesh(coll, "veneer_front", face, z, z + spec["veneer_mm"], wood, spec["bevel_mm"])
         new_mesh(coll, "veneer_back", face, -z - spec["veneer_mm"], -z, wood, spec["bevel_mm"])
         for text in spec["texts"]:
@@ -214,6 +230,28 @@ class Runtime:
     def __init__(self, output_root=None):
         self.output_root = Path(output_root or Path.home() / "BlenderAgenticMCP").expanduser().resolve()
         self.epoch = uuid.uuid4().hex
+        self.project_saved()
+
+    @staticmethod
+    def disk_signature(filepath):
+        if not filepath:
+            return None
+        try:
+            stat = Path(filepath).stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_ino)
+
+    def project_saved(self):
+        """Record writes made by this Blender process, including normal GUI saves."""
+        self._project_path = bpy.data.filepath
+        self._project_disk = self.disk_signature(self._project_path)
+
+    def project_status(self):
+        path = bpy.data.filepath
+        return {"filepath": path, "scene": bpy.context.scene.name,
+                "unsaved_changes": bpy.data.is_dirty,
+                "disk_changed": path != self._project_path or self.disk_signature(path) != self._project_disk}
 
     def assets(self):
         return [c for c in bpy.context.scene.collection.children if STATE in c]
@@ -243,10 +281,12 @@ class Runtime:
                 raise DomainError("EXTERNAL_DEPENDENCY", "Generated geometry is shared with another object.")
 
     def summary(self, coll, state, include_spec=False):
+        native = state.get("kind") == "native_recessed"
         result = {"ok": True, "asset_ref": state["ref"], "revision": state["revision"],
                   "objects": len(coll.objects), "units": "mm", "manual_changes": fingerprint(coll) != state["fingerprint"],
                   "checks": {"text_fit": "pass", "text_overlap": "pass", "self_intersection": "unknown"},
-                  "notes": ["Tree emblem is an approximation.", "Built-in font is a substitute." if not state["spec"]["font_path"] else "User font selected."]}
+                  "notes": (["Adopted native Blender geometry; mesh profiles and materials are preserved."] if native else
+                             ["Tree emblem is an approximation.", "Built-in font is a substitute." if not state["spec"]["font_path"] else "User font selected."])}
         if result["manual_changes"]:
             result["checks"]["text_fit"] = result["checks"]["text_overlap"] = "unknown"
         if include_spec:
@@ -257,7 +297,8 @@ class Runtime:
         try:
             handlers = {"status": self.status, "inspect": self.inspect, "create": self.create,
                         "update": self.update, "text_set": self.text_set, "history": self.history,
-                        "restore": self.restore, "preview": self.preview, "save": self.save}
+                        "restore": self.restore, "preview": self.preview, "save": self.save,
+                        "export": self.export, "adopt": self.adopt}
             if op not in handlers:
                 raise DomainError("UNSUPPORTED_OPERATION", "Discover the supported operations with status.")
             return handlers[op](**args)
@@ -271,9 +312,13 @@ class Runtime:
     def status(self):
         return {"ok": True, "version": VERSION, "blender": bpy.app.version_string, "epoch": self.epoch,
                 "execution_mode": "headless" if bpy.app.background else "live_gui",
-                "operations": ["inspect", "create", "update", "text_set", "history", "restore", "preview", "save"],
+                "operations": ["inspect", "create", "update", "text_set", "adopt", "history", "restore", "preview", "save", "export"],
+                "capabilities": {"recessed_recipe": True, "native_adoption": True,
+                                 "same_project_save": True, "background_fallback": False},
+                "project": self.project_status(),
+                "tested_blender": "4.5.3 LTS; other versions require verification",
                 "output_root": str(self.output_root),
-                "assets": [{"asset_ref": json.loads(c[STATE])["ref"], "name": c.name} for c in self.assets()]}
+                "assets": [{"asset_ref": json.loads(c[STATE])["ref"], "revision": json.loads(c[STATE])["revision"], "name": c.name} for c in self.assets()]}
 
     def inspect(self, asset_ref=None, offset=0, limit=20):
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
@@ -301,10 +346,180 @@ class Runtime:
                     return h, {**record["result"], "replayed": True, "current_revision": state["revision"]}
         return h, None
 
-    def create(self, spec, request_id):
-        h, replay = self.request_check(request_id, {"op": "create", "spec": spec})
+    @staticmethod
+    def _bounds_mm(obj):
+        corners = [obj.matrix_world @ Vector(v) for v in obj.bound_box]
+        return (min(v.x for v in corners) * 1000, max(v.x for v in corners) * 1000,
+                min(v.y for v in corners) * 1000, max(v.y for v in corners) * 1000,
+                min(v.z for v in corners) * 1000, max(v.z for v in corners) * 1000)
+
+    def _native_spec(self, body, front, back, web, texts):
+        bx0, bx1, by0, by1, bz0, bz1 = self._bounds_mm(body)
+        fx0, fx1, fy0, fy1, fz0, fz1 = self._bounds_mm(front)
+        _, _, _, _, wz0, wz1 = self._bounds_mm(web)
+        width, height = bx1 - bx0, by1 - by0
+        total, veneer = bz1 - bz0, max(0.01, fz1 - fz0)
+        nominal_core = total - 2 * veneer
+        actual_web = max(0.01, wz1 - wz0)
+        # Native cards are retained as profiles, so these values describe the
+        # editable dimensions without pretending the source mesh is a recipe.
+        text_specs = []
+        for obj in texts:
+            body_text = obj.data.body
+            side = "back" if obj.location.z < 0 else "front"
+            x = (-obj.location.x if side == "back" else obj.location.x) * 1000
+            y = obj.location.y * 1000
+            text_specs.append({"id": obj.name.split(".", 1)[0], "text": body_text,
+                               "side": side, "x_mm": x, "y_mm": y,
+                               "size_mm": obj.data.size * 1000,
+                               "tracking": obj.data.space_character,
+                               "rotation_deg": math.degrees(obj.rotation_euler.z)})
+        raw = {"width_mm": width, "height_mm": height, "construction": "recessed",
+               "recess_mm": max(0, (nominal_core - actual_web) / 2),
+               "corner_radius_mm": 0, "core_mm": nominal_core, "veneer_mm": veneer,
+               "border_mm": max(0.1, min(width - (fx1 - fx0), height - (fy1 - fy0)) / 2),
+               "corner_cut_mm": 0, "bevel_mm": 0.01, "texts": text_specs}
+        # The native source may have a sharp corner cut or rounded outline;
+        # zero is deliberately used for future recipe edits while the meshes
+        # themselves remain authoritative.
+        return validate_spec(raw)
+
+    def adopt(self, expected_filepath, request_id, objects):
+        """Adopt four existing native mesh objects without rebuilding them."""
+        if not isinstance(expected_filepath, str) or expected_filepath != bpy.data.filepath:
+            raise DomainError("PROJECT_MISMATCH", "Read card_status and supply the exact current project.filepath.",
+                              filepath=bpy.data.filepath)
+        if not isinstance(objects, dict):
+            raise DomainError("INVALID_ARGUMENT", "objects must identify body, front_veneer, back_veneer and web by name.")
+        payload = {"op": "adopt", "expected_filepath": expected_filepath, "objects": objects}
+        h, replay = self.request_check(request_id, payload)
         if replay:
             return replay
+        if self.assets():
+            raise DomainError("CARD_ALREADY_EXISTS", "The active scene already has an adopted/generated card; inspect and edit it instead.")
+        names = [objects.get(k) for k in ("body", "front_veneer", "back_veneer", "web")]
+        names += list(objects.get("texts") or [])
+        if any(not isinstance(n, str) or not n for n in names) or len(set(names)) != len(names):
+            raise DomainError("INVALID_ARGUMENT", "Adoption object names must be unique, nonempty strings.")
+        found = []
+        for name in names:
+            obj = bpy.data.objects.get(name)
+            if obj is None or obj.name not in bpy.context.scene.objects:
+                raise DomainError("NOT_FOUND", "Adoption object is not in the active scene.", name=name)
+            found.append(obj)
+        body, front, back, web = found[:4]
+        if any(o.type != "MESH" for o in (body, front, back, web)) or any(o.type != "FONT" for o in found[4:]):
+            raise DomainError("INVALID_ARGUMENT", "Native adoption requires four mesh layers and optional FONT text objects.")
+        spec = self._native_spec(body, front, back, web, found[4:])
+        coll = bpy.data.collections.new("Adopted Card")
+        bpy.context.scene.collection.children.link(coll)
+        try:
+            role_map = {body: "body", front: "veneer_front", back: "veneer_back", web: "web"}
+            for obj in found[4:]:
+                role_map[obj] = "text:" + obj.name.split(".", 1)[0]
+            for obj, role in role_map.items():
+                for parent in list(obj.users_collection):
+                    parent.objects.unlink(obj)
+                coll.objects.link(obj)
+                obj[ROLE] = role
+            state = {"ref": "card:" + uuid.uuid4().hex, "revision": 1, "kind": "native_recessed",
+                     "spec": spec, "native_roles": {role: obj.name for obj, role in role_map.items()},
+                     "history": [], "requests": []}
+            state["fingerprint"] = fingerprint(coll)
+            result = self.summary(coll, state)
+            state["requests"].append({"id": request_id, "hash": h, "result": result})
+            coll[STATE] = canonical(state)
+            coll.name = "Adopted Card " + state["ref"][-8:]
+            bpy.context.view_layer.update()
+            return result
+        except Exception:
+            for obj in found:
+                if coll in obj.users_collection:
+                    coll.objects.unlink(obj)
+            if coll.users == 0:
+                bpy.data.collections.remove(coll)
+            raise
+
+    def native_commit(self, old, state, spec, request_id, request_hash):
+        """Clone an adopted card while preserving native mesh topology/materials."""
+        staged = bpy.data.collections.new("Native card staging")
+        bpy.context.scene.collection.children.link(staged)
+        try:
+            copied = {}
+            for src in list(old.objects):
+                obj = src.copy()
+                if src.data:
+                    obj.data = src.data.copy()
+                staged.objects.link(obj)
+                copied[src.get(ROLE)] = obj
+            old_spec = json.loads(old[STATE])["spec"]
+            old_total = old_spec["core_mm"] + 2 * old_spec["veneer_mm"]
+            new_total = spec["core_mm"] + 2 * spec["veneer_mm"]
+            old_web = max(0.01, old_spec["core_mm"] - 2 * old_spec.get("recess_mm", 0))
+            new_web = max(0.01, spec["core_mm"] - 2 * spec.get("recess_mm", 0))
+            for role in ("body", "web", "veneer_front", "veneer_back"):
+                obj = copied.get(role)
+                if obj is None:
+                    continue
+                current = max(0.001, obj.dimensions.z * 1000)
+                if role == "body": target, center = new_total, 0
+                elif role == "web": target, center = new_web, 0
+                elif role == "veneer_front": target, center = spec["veneer_mm"], new_web / 2 + spec["veneer_mm"] / 2
+                else: target, center = spec["veneer_mm"], -(new_web / 2 + spec["veneer_mm"] / 2)
+                obj.scale.z *= target / current
+                obj.location.z = center / 1000
+                if old_spec["width_mm"]:
+                    obj.scale.x *= spec["width_mm"] / old_spec["width_mm"]
+                if old_spec["height_mm"]:
+                    obj.scale.y *= spec["height_mm"] / old_spec["height_mm"]
+            for text in spec["texts"]:
+                obj = copied.get("text:" + text["id"])
+                if obj is None:
+                    gold = next((m for src in copied.values() if src.type == "FONT"
+                                 for m in src.data.materials if m), None)
+                    if gold is None:
+                        gold = material("Adopted text", [0.8, 0.6, 0.25], 0.25)
+                    make_text(staged, text, spec, gold)
+                    continue
+                d = obj.data
+                d.body, d.size, d.space_character = text["text"], text["size_mm"] / 1000, text["tracking"]
+                sign = -1 if text["side"] == "back" else 1
+                surface = spec["core_mm"] / 2 + spec["veneer_mm"] - (spec.get("recess_mm", 0) if spec.get("construction") == "recessed" else 0)
+                obj.location = (sign * text["x_mm"] / 1000, text["y_mm"] / 1000,
+                                sign * (surface + 0.006) / 1000)
+                obj.rotation_euler = (0, math.pi if sign < 0 else 0, math.radians(text.get("rotation_deg", 0)))
+            bpy.context.view_layer.update()
+            state["spec"] = spec
+            state["fingerprint"] = fingerprint(staged)
+            result = self.summary(staged, state)
+            state["requests"].append({"id": request_id, "hash": request_hash, "result": result})
+            if len(state["requests"]) > 256:
+                raise DomainError("LEDGER_FULL", "Prototype limit reached: 256 mutations per card.")
+            staged[STATE] = canonical(state)
+            staged.name = "Adopted Card " + state["ref"][-8:]
+            bpy.context.scene.collection.children.unlink(old)
+        except Exception:
+            cleanup(staged)
+            raise
+        try:
+            cleanup(old)
+        except Exception:
+            result["cleanup_pending"] = True
+        bpy.context.view_layer.update()
+        return result
+
+    def create(self, spec, request_id, allow_additional=False):
+        payload = {"op": "create", "spec": spec}
+        if allow_additional:
+            payload["allow_additional"] = True
+        h, replay = self.request_check(request_id, payload)
+        if replay:
+            return replay
+        if type(allow_additional) is not bool:
+            raise DomainError("INVALID_ARGUMENT", "allow_additional must be a boolean.")
+        if self.assets() and not allow_additional:
+            raise DomainError("CARD_ALREADY_EXISTS", "Edit an existing asset with card_update/card_text_set. Set allow_additional only when the user asks for another card.",
+                              asset_refs=[json.loads(c[STATE])["ref"] for c in self.assets()])
         if bpy.context.mode != "OBJECT":
             raise DomainError("INVALID_MODE", "Switch Blender to Object Mode before constructing a card.")
         normalized = validate_spec(spec)
@@ -324,6 +539,8 @@ class Runtime:
         updated["history"].append({"revision": state["revision"], "spec": state["spec"]})
         updated["history"] = updated["history"][-32:]
         updated["revision"] += 1
+        if state.get("kind") == "native_recessed":
+            return self.native_commit(coll, updated, candidate, request_id, h)
         return self.commit(coll, updated, candidate, request_id, h)
 
     def commit(self, old, state, spec, request_id, request_hash):
@@ -411,7 +628,40 @@ class Runtime:
         render_preview(coll, state["spec"], view, resolution, path)
         return {"ok": True, "path": str(path), "view": view, "revision": state["revision"], "resolution": resolution}
 
-    def save(self, asset_ref, filename):
+    def save(self, expected_filepath, filename=None):
+        """Save the current complete project in this Blender process, like Ctrl+S."""
+        if not isinstance(expected_filepath, str) or expected_filepath != bpy.data.filepath:
+            raise DomainError("PROJECT_MISMATCH", "Read card_status and supply the exact current project.filepath.",
+                              filepath=bpy.data.filepath)
+        if self.project_status()["disk_changed"]:
+            raise DomainError("PROJECT_DISK_CONFLICT", "The project changed on disk or was switched outside this bridge. Reconcile it in Blender before saving; do not overwrite from a stale live scene.")
+        first_save = not bpy.data.filepath
+        if first_save:
+            if filename is None:
+                raise DomainError("FILENAME_REQUIRED", "The current project is unsaved. Supply a simple .blend filename for its first save.")
+            path = self.artifact_path(filename, ".blend")
+        else:
+            if filename is not None:
+                raise DomainError("SAVE_AS_NOT_SUPPORTED", "Omit filename to save the current project. Use card_export only for an explicitly requested separate card copy.")
+            path = Path(bpy.data.filepath)
+        # Blender's native save preserves the whole project, workspace and manual edits.
+        # Keep at least one normal .blend1 backup of the previous on-disk project.
+        prefs = bpy.context.preferences.filepaths
+        previous_backups = prefs.save_version
+        prefs.save_version = max(1, previous_backups)
+        try:
+            result = bpy.ops.wm.save_as_mainfile(filepath=str(path), check_existing=False)
+            if "FINISHED" not in result:
+                raise DomainError("SAVE_FAILED", "Blender did not complete the project save.")
+        finally:
+            prefs.save_version = previous_backups
+        self.project_saved()
+        return {"ok": True, "path": bpy.data.filepath, "first_save": first_save,
+                "scope": "complete current project; same file on subsequent saves",
+                "project": self.project_status()}
+
+    def export(self, asset_ref, filename):
+        """Explicit card-only copy; never changes the live project's save target."""
         coll, state = self.resolve(asset_ref)
         if fingerprint(coll) != state["fingerprint"]:
             raise DomainError("MANUAL_EDIT_CONFLICT", "Save manual edits through Blender before exporting a recipe artifact.")

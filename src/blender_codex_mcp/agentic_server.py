@@ -8,14 +8,21 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, ImageContent, TextContent, ToolAnnotations
 
-from .agentic.model import CardSpec, CardPatch, TextPatch, DomainError, canonical
+from .agentic.model import CardSpec, CardPatch, TextPatch, NativeCardObjects, DomainError, canonical
 from .agentic.wire import Client
 
 mcp = FastMCP("Blender Agentic Card", instructions=(
-    "Create/edit layered business cards in millimetres. Inspect before editing. "
+    "Create/edit layered or recessed business cards in millimetres. Inspect before editing. "
     "Use current revision and a fresh request_id per mutation; reuse the SAME id and "
     "arguments only when retrying an uncertain outcome. Request images only when useful. "
     "Text edits preserve omitted properties. Never claim token savings or fabrication readiness."
+    " Keep working on the same asset and live project. Read card_status to identify its filepath; "
+    "do not infer the current card from output filenames. Use card_update for dimension changes, "
+    "card_text_set for text/rotation, and card_save for the current complete project. "
+    "Use card_export only for an explicitly requested separate copy. Never silently switch to "
+    "a background Blender process or create a replacement when a tool is unavailable. "
+    "If a card already exists as native Blender geometry, use card_inspect then card_adopt "
+    "with the exact mesh/text object names; subsequent edits stay in that same project."
 ))
 client = Client(port=int(os.environ.get("BLENDER_AGENTIC_PORT", "9877")))
 
@@ -48,9 +55,18 @@ def card_inspect(asset_ref: str | None = None, offset: int = 0, limit: int = 20)
 
 
 @mcp.tool(annotations=annotation(replay=True))
-def card_create(request_id: str, spec: CardSpec | None = None) -> CallToolResult:
-    """Build gold core, dark veneers, editable text and approximate tree emblem. Defaults: 85x55mm."""
-    return call("create", spec=asdict(spec or CardSpec()), request_id=request_id)
+def card_create(request_id: str, spec: CardSpec | None = None, allow_additional: bool = False) -> CallToolResult:
+    """Create a NEW layered or recessed card. To edit an existing card use card_update. Additional cards require explicit intent."""
+    return call("create", spec=asdict(spec or CardSpec()), request_id=request_id, allow_additional=allow_additional)
+
+
+@mcp.tool(annotations=annotation(replay=True))
+def card_adopt(expected_filepath: str, request_id: str, objects: NativeCardObjects) -> CallToolResult:
+    """Adopt four existing native mesh objects (body, front_veneer, back_veneer, web) and optional FONT names.
+
+    This preserves the source meshes/materials and makes text, thickness, recess and save operations conversational.
+    """
+    return call("adopt", expected_filepath=expected_filepath, request_id=request_id, objects=asdict(objects))
 
 
 @mcp.tool(annotations=annotation(replay=True))
@@ -101,9 +117,18 @@ def card_preview(asset_ref: str, view: Literal["front", "back", "edge", "perspec
 
 
 @mcp.tool(annotations=annotation())
-def card_save(asset_ref: str, filename: str) -> CallToolResult:
-    """Save a card-only editable .blend in output folder, never overwrite. Supply a simple filename."""
-    return call("save", asset_ref=asset_ref, filename=filename)
+def card_save(expected_filepath: str, filename: str | None = None) -> CallToolResult:
+    """Save the complete CURRENT Blender project, like Ctrl+S. Copy project.filepath from status (empty if unsaved).
+
+    Supply filename only for the first save of an unsaved project. Later saves update the same file with a Blender backup.
+    """
+    return call("save", expected_filepath=expected_filepath, filename=filename)
+
+
+@mcp.tool(annotations=annotation())
+def card_export(asset_ref: str, filename: str) -> CallToolResult:
+    """Export an explicitly requested separate card-only copy. Does NOT save/update the live project. Never overwrites."""
+    return call("export", asset_ref=asset_ref, filename=filename)
 
 
 def main():

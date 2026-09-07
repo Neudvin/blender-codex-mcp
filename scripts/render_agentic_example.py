@@ -22,6 +22,6 @@ card = runtime.create(spec, "reference-example")
 manifest = {"card": card, "font": spec.get("font_path", "Blender built-in")}
 for view in ("front", "back", "perspective"):
     manifest[view] = runtime.preview(card["asset_ref"], view, 768)
-manifest["blend"] = runtime.save(card["asset_ref"], "reference-card.blend")
+manifest["blend"] = runtime.export(card["asset_ref"], "reference-card.blend")
 (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
 print("REFERENCE_EXAMPLE_PASS", output)
