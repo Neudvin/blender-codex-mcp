@@ -16,13 +16,13 @@ Use a separate checkout so your current setup at
 assume Git and uv are already installed:
 
 ```powershell
-git clone --branch codex/typed-card-prototype https://github.com/Neudvin/blender-codex-mcp.git C:\Users\neudv\blender-agentic-mcp
-Set-Location C:\Users\neudv\blender-agentic-mcp
+git clone --branch codex/typed-card-prototype https://github.com/Neudvin/blender-codex-mcp.git C:\Organization\30-39 Projects\30 Software & AI Projects\30.06 Blender Agentic MCP\blender-agentic-mcp
+Set-Location C:\Organization\30-39 Projects\30 Software & AI Projects\30.06 Blender Agentic MCP\blender-agentic-mcp
 uv run python scripts/build_agentic_addon.py
 ```
 
 1. In Blender 4.5 LTS, open **Edit > Preferences > Add-ons > Install from Disk**.
-2. Select `C:\Users\neudv\blender-agentic-mcp\dist\blender_agentic_mcp.zip` and
+2. Select `C:\Organization\30-39 Projects\30 Software & AI Projects\30.06 Blender Agentic MCP\blender-agentic-mcp\dist\blender_agentic_mcp.zip` and
    enable **Blender Agentic Card MCP**.
 3. In the 3D Viewport press **N**, open **Agentic Card**, and click **Start MCP**.
 4. Add the following separate entry to your Codex configuration at
@@ -31,7 +31,7 @@ uv run python scripts/build_agentic_addon.py
 ```toml
 [mcp_servers.blender_agentic]
 command = "uv"
-args = ["--directory", "C:/Users/neudv/blender-agentic-mcp", "run", "blender-agentic-mcp"]
+args = ["--directory", "C:/Organization/30-39 Projects/30 Software & AI Projects/30.06 Blender Agentic MCP/blender-agentic-mcp", "run", "blender-agentic-mcp"]
 tool_timeout_sec = 240
 ```
 
@@ -106,7 +106,7 @@ update the `codex/typed-card-prototype` branch without discarding your work.
 For a clean checkout:
 
 ```powershell
-Set-Location C:\Users\neudv\blender-agentic-mcp
+Set-Location C:\Organization\30-39 Projects\30 Software & AI Projects\30.06 Blender Agentic MCP\blender-agentic-mcp
 git pull --ff-only
 uv run python scripts/build_agentic_addon.py
 ```
